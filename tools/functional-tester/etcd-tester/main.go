@@ -50,6 +50,7 @@ func main() {
 	isV2Only := flag.Bool("v2-only", false, "'true' to run V2 only tester.")
 	stresserType := flag.String("stresser", "default", "specify stresser (\"default\" or \"nop\").")
 	failureTypes := flag.String("failures", "default,failpoints", "specify failures (concat of \"default\" and \"failpoints\").")
+	externalFailures := flag.String("external-failures", "", "specify a path of script for enabling/disabling an external fault injector")
 	flag.Parse()
 
 	eps := strings.Split(*endpointStr, ",")
@@ -57,6 +58,7 @@ func main() {
 	pports := portsFromArg(*peerPorts, len(eps), defaultPeerPort)
 	fports := portsFromArg(*failpointPorts, len(eps), defaultFailpointPort)
 	agents := make([]agentConfig, len(eps))
+
 	for i := range eps {
 		agents[i].endpoint = eps[i]
 		agents[i].clientPort = cports[i]
@@ -73,10 +75,18 @@ func main() {
 		v2:             *isV2Only,
 	}
 
+	lsConfig := &leaseStressConfig{
+		numLeases:    10,
+		keysPerLease: 10,
+		qps:          *stressQPS, // only used to create nop stresser in leaseStresserBuilder
+	}
+
 	c := &cluster{
-		agents:        agents,
-		v2Only:        *isV2Only,
-		stressBuilder: newStressBuilder(*stresserType, sConfig),
+		agents:               agents,
+		v2Only:               *isV2Only,
+		stressBuilder:        newStressBuilder(*stresserType, sConfig),
+		leaseStresserBuilder: newLeaseStresserBuilder(*stresserType, lsConfig),
+		consistencyCheck:     *consistencyCheck,
 	}
 
 	if err := c.bootstrap(); err != nil {
@@ -91,6 +101,14 @@ func main() {
 
 	if failureTypes != nil && *failureTypes != "" {
 		failures = makeFailures(*failureTypes, c)
+	}
+
+	if externalFailures != nil && *externalFailures != "" {
+		if len(failures) != 0 {
+			plog.Errorf("specify only one of -failures or -external-failures")
+			os.Exit(1)
+		}
+		failures = append(failures, newFailureExternal(*externalFailures))
 	}
 
 	if len(failures) == 0 {
@@ -111,16 +129,10 @@ func main() {
 			schedule[i] = failures[caseNum]
 		}
 	}
-
 	t := &tester{
 		failures: schedule,
 		cluster:  c,
 		limit:    *limit,
-		checker:  newNoChecker(),
-	}
-
-	if *consistencyCheck && !c.v2Only {
-		t.checker = newHashChecker(t)
 	}
 
 	sh := statusHandler{status: &t.status}
