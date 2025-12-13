@@ -19,13 +19,17 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/coreos/etcd/clientv3"
 	"github.com/spf13/cobra"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/cobrautl"
 )
 
 var (
-	leaseStr  string
-	putPrevKV bool
+	leaseStr       string
+	putPrevKV      bool
+	putIgnoreVal   bool
+	putIgnoreLease bool
 )
 
 // NewPutCommand returns the cobra command for "put".
@@ -42,53 +46,75 @@ Insert '--' for workaround:
 $ put <key> -- <value>
 $ put -- <key> <value>
 
-If <value> isn't given as command line argument, this command tries to read the value from standard input.
+If <value> isn't given as a command line argument and '--ignore-value' is not specified,
+this command tries to read the value from standard input.
+
+If <lease> isn't given as a command line argument and '--ignore-lease' is not specified,
+this command tries to read the value from standard input.
+
 For example,
 $ cat file | put <key>
 will store the content of the file to <key>.
 `,
-		Run: putCommandFunc,
+		Run:     putCommandFunc,
+		GroupID: groupKVID,
 	}
 	cmd.Flags().StringVar(&leaseStr, "lease", "0", "lease ID (in hexadecimal) to attach to the key")
 	cmd.Flags().BoolVar(&putPrevKV, "prev-kv", false, "return the previous key-value pair before modification")
+	cmd.Flags().BoolVar(&putIgnoreVal, "ignore-value", false, "updates the key using its current value")
+	cmd.Flags().BoolVar(&putIgnoreLease, "ignore-lease", false, "updates the key using its current lease")
 	return cmd
 }
 
 // putCommandFunc executes the "put" command.
 func putCommandFunc(cmd *cobra.Command, args []string) {
-	key, value, opts := getPutOp(cmd, args)
+	key, value, opts := getPutOp(args)
 
 	ctx, cancel := commandCtx(cmd)
 	resp, err := mustClientFromCmd(cmd).Put(ctx, key, value, opts...)
 	cancel()
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 	display.Put(*resp)
 }
 
-func getPutOp(cmd *cobra.Command, args []string) (string, string, []clientv3.OpOption) {
+func getPutOp(args []string) (string, string, []clientv3.OpOption) {
 	if len(args) == 0 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("put command needs 1 argument and input from stdin or 2 arguments."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("put command needs 1 argument and input from stdin or 2 arguments"))
 	}
 
 	key := args[0]
-	value, err := argOrStdin(args, os.Stdin, 1)
-	if err != nil {
-		ExitWithError(ExitBadArgs, fmt.Errorf("put command needs 1 argument and input from stdin or 2 arguments."))
+	if putIgnoreVal && len(args) > 1 {
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("put command needs only 1 argument when 'ignore-value' is set"))
+	}
+
+	var value string
+	var err error
+	if !putIgnoreVal {
+		value, err = argOrStdin(args, os.Stdin, 1)
+		if err != nil {
+			cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("put command needs 1 argument and input from stdin or 2 arguments"))
+		}
 	}
 
 	id, err := strconv.ParseInt(leaseStr, 16, 64)
 	if err != nil {
-		ExitWithError(ExitBadArgs, fmt.Errorf("bad lease ID (%v), expecting ID in Hex", err))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("bad lease ID (%w), expecting ID in Hex", err))
 	}
 
-	opts := []clientv3.OpOption{}
+	var opts []clientv3.OpOption
 	if id != 0 {
 		opts = append(opts, clientv3.WithLease(clientv3.LeaseID(id)))
 	}
 	if putPrevKV {
 		opts = append(opts, clientv3.WithPrevKV())
+	}
+	if putIgnoreVal {
+		opts = append(opts, clientv3.WithIgnoreValue())
+	}
+	if putIgnoreLease {
+		opts = append(opts, clientv3.WithIgnoreLease())
 	}
 
 	return key, value, opts

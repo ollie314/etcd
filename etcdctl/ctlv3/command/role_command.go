@@ -15,23 +15,27 @@
 package command
 
 import (
+	"context"
 	"fmt"
-	"strings"
 
-	"github.com/coreos/etcd/clientv3"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/cobrautl"
 )
 
 var (
-	grantPermissionPrefix bool
+	rolePermPrefix  bool
+	rolePermFromKey bool
 )
 
 // NewRoleCommand returns the cobra command for "role".
 func NewRoleCommand() *cobra.Command {
 	ac := &cobra.Command{
-		Use:   "role <subcommand>",
-		Short: "Role related commands",
+		Use:     "role <subcommand>",
+		Short:   "Role related commands. Use `etcdctl role --help` to see subcommands",
+		Long:    "Role related commands",
+		GroupID: groupAuthenticationID,
 	}
 
 	ac.AddCommand(newRoleAddCommand())
@@ -83,161 +87,162 @@ func newRoleGrantPermissionCommand() *cobra.Command {
 		Run:   roleGrantPermissionCommandFunc,
 	}
 
-	cmd.Flags().BoolVar(&grantPermissionPrefix, "prefix", false, "grant a prefix permission")
+	cmd.Flags().BoolVar(&rolePermPrefix, "prefix", false, "grant a prefix permission")
+	cmd.Flags().BoolVar(&rolePermFromKey, "from-key", false, "grant a permission of keys that are greater than or equal to the given key using byte compare")
 
 	return cmd
 }
 
 func newRoleRevokePermissionCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "revoke-permission <role name> <key> [endkey]",
 		Short: "Revokes a key from a role",
 		Run:   roleRevokePermissionCommandFunc,
 	}
+
+	cmd.Flags().BoolVar(&rolePermPrefix, "prefix", false, "revoke a prefix permission")
+	cmd.Flags().BoolVar(&rolePermFromKey, "from-key", false, "revoke a permission of keys that are greater than or equal to the given key using byte compare")
+
+	return cmd
 }
 
 // roleAddCommandFunc executes the "role add" command.
 func roleAddCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("role add command requires role name as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("role add command requires role name as its argument"))
 	}
 
-	_, err := mustClientFromCmd(cmd).Auth.RoleAdd(context.TODO(), args[0])
+	resp, err := mustClientFromCmd(cmd).Auth.RoleAdd(context.TODO(), args[0])
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	fmt.Printf("Role %s created\n", args[0])
+	display.RoleAdd(args[0], *resp)
 }
 
 // roleDeleteCommandFunc executes the "role delete" command.
 func roleDeleteCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("role delete command requires role name as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("role delete command requires role name as its argument"))
 	}
 
-	_, err := mustClientFromCmd(cmd).Auth.RoleDelete(context.TODO(), args[0])
+	resp, err := mustClientFromCmd(cmd).Auth.RoleDelete(context.TODO(), args[0])
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	fmt.Printf("Role %s deleted\n", args[0])
-}
-
-func printRolePermissions(name string, resp *clientv3.AuthRoleGetResponse) {
-	fmt.Printf("Role %s\n", name)
-	fmt.Println("KV Read:")
-
-	printRange := func(perm *clientv3.Permission) {
-		sKey := string(perm.Key)
-		sRangeEnd := string(perm.RangeEnd)
-		fmt.Printf("\t[%s, %s)", sKey, sRangeEnd)
-		if strings.Compare(clientv3.GetPrefixRangeEnd(sKey), sRangeEnd) == 0 {
-			fmt.Printf(" (prefix %s)", sKey)
-		}
-		fmt.Printf("\n")
-	}
-
-	for _, perm := range resp.Perm {
-		if perm.PermType == clientv3.PermRead || perm.PermType == clientv3.PermReadWrite {
-			if len(perm.RangeEnd) == 0 {
-				fmt.Printf("\t%s\n", string(perm.Key))
-			} else {
-				printRange((*clientv3.Permission)(perm))
-			}
-		}
-	}
-	fmt.Println("KV Write:")
-	for _, perm := range resp.Perm {
-		if perm.PermType == clientv3.PermWrite || perm.PermType == clientv3.PermReadWrite {
-			if len(perm.RangeEnd) == 0 {
-				fmt.Printf("\t%s\n", string(perm.Key))
-			} else {
-				printRange((*clientv3.Permission)(perm))
-			}
-		}
-	}
+	display.RoleDelete(args[0], *resp)
 }
 
 // roleGetCommandFunc executes the "role get" command.
 func roleGetCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("role get command requires role name as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("role get command requires role name as its argument"))
 	}
 
 	name := args[0]
 	resp, err := mustClientFromCmd(cmd).Auth.RoleGet(context.TODO(), name)
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	printRolePermissions(name, resp)
+	display.RoleGet(name, *resp)
 }
 
 // roleListCommandFunc executes the "role list" command.
 func roleListCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 0 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("role list command requires no arguments."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("role list command requires no arguments"))
 	}
 
 	resp, err := mustClientFromCmd(cmd).Auth.RoleList(context.TODO())
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	for _, role := range resp.Roles {
-		fmt.Printf("%s\n", role)
-	}
+	display.RoleList(*resp)
 }
 
 // roleGrantPermissionCommandFunc executes the "role grant-permission" command.
 func roleGrantPermissionCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) < 3 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("role grant command requires role name, permission type, and key [endkey] as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("role grant command requires role name, permission type, and key [endkey] as its argument"))
 	}
 
 	perm, err := clientv3.StrToPermissionType(args[1])
 	if err != nil {
-		ExitWithError(ExitBadArgs, err)
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, err)
 	}
 
-	rangeEnd := ""
-	if 4 <= len(args) {
-		if grantPermissionPrefix {
-			ExitWithError(ExitBadArgs, fmt.Errorf("don't pass both of --prefix option and range end to grant permission command"))
-		}
-		rangeEnd = args[3]
-	} else if grantPermissionPrefix {
-		rangeEnd = clientv3.GetPrefixRangeEnd(args[2])
-	}
-
-	_, err = mustClientFromCmd(cmd).Auth.RoleGrantPermission(context.TODO(), args[0], args[2], rangeEnd, perm)
+	key, rangeEnd := permRange(args[2:])
+	resp, err := mustClientFromCmd(cmd).Auth.RoleGrantPermission(context.TODO(), args[0], key, rangeEnd, perm)
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	fmt.Printf("Role %s updated\n", args[0])
+	display.RoleGrantPermission(args[0], *resp)
 }
 
 // roleRevokePermissionCommandFunc executes the "role revoke-permission" command.
 func roleRevokePermissionCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) < 2 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("role revoke-permission command requires role name and key [endkey] as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("role revoke-permission command requires role name and key [endkey] as its argument"))
 	}
 
-	rangeEnd := ""
-	if 3 <= len(args) {
-		rangeEnd = args[2]
-	}
-
-	_, err := mustClientFromCmd(cmd).Auth.RoleRevokePermission(context.TODO(), args[0], args[1], rangeEnd)
+	key, rangeEnd := permRange(args[1:])
+	resp, err := mustClientFromCmd(cmd).Auth.RoleRevokePermission(context.TODO(), args[0], key, rangeEnd)
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
+	display.RoleRevokePermission(args[0], args[1], rangeEnd, *resp)
+}
 
-	if len(rangeEnd) == 0 {
-		fmt.Printf("Permission of key %s is revoked from role %s\n", args[1], args[0])
+func permRange(args []string) (string, string) {
+	key := args[0]
+	var rangeEnd string
+	if len(key) == 0 {
+		if rolePermPrefix && rolePermFromKey {
+			cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("--from-key and --prefix flags are mutually exclusive"))
+		}
+
+		// Range permission is expressed as adt.BytesAffineInterval,
+		// so the empty prefix which should be matched with every key must be like this ["\x00", <end>).
+		key = "\x00"
+		if rolePermPrefix || rolePermFromKey {
+			// For the both cases of prefix and from-key, a permission with an empty key
+			// should allow access to the entire key space.
+			// 0x00 will be treated as open ended in server side.
+			rangeEnd = "\x00"
+		}
 	} else {
-		fmt.Printf("Permission of range [%s, %s) is revoked from role %s\n", args[1], rangeEnd, args[0])
+		var err error
+		rangeEnd, err = rangeEndFromPermFlags(args[0:])
+		if err != nil {
+			cobrautl.ExitWithError(cobrautl.ExitBadArgs, err)
+		}
 	}
+	return key, rangeEnd
+}
+
+func rangeEndFromPermFlags(args []string) (string, error) {
+	if len(args) == 1 {
+		if rolePermPrefix {
+			if rolePermFromKey {
+				return "", fmt.Errorf("--from-key and --prefix flags are mutually exclusive")
+			}
+			return clientv3.GetPrefixRangeEnd(args[0]), nil
+		}
+		if rolePermFromKey {
+			return "\x00", nil
+		}
+		// single key case
+		return "", nil
+	}
+	if rolePermPrefix {
+		return "", fmt.Errorf("unexpected endkey argument with --prefix flag")
+	}
+	if rolePermFromKey {
+		return "", fmt.Errorf("unexpected endkey argument with --from-key flag")
+	}
+	return args[1], nil
 }

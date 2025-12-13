@@ -15,16 +15,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 
-	v3 "github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/pkg/report"
-
+	"github.com/cheggaaa/pb/v3"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
-	"gopkg.in/cheggaaa/pb.v1"
+
+	v3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/report"
 )
 
 // watchGetCmd represents the watch command
@@ -49,7 +49,7 @@ func init() {
 	watchGetCmd.Flags().IntVar(&watchEvents, "events", 8, "Number of events per watcher")
 }
 
-func watchGetFunc(cmd *cobra.Command, args []string) {
+func watchGetFunc(cmd *cobra.Command, _ []string) {
 	clients := mustCreateClients(totalClients, totalConns)
 	getClient := mustCreateClients(1, 1)
 
@@ -72,11 +72,10 @@ func watchGetFunc(cmd *cobra.Command, args []string) {
 	}
 
 	bar = pb.New(watchGetTotalWatchers * watchEvents)
-	bar.Format("Bom !")
 	bar.Start()
 
 	// report from trying to do serialized gets with concurrent watchers
-	r := newReport()
+	r := newReport(cmd.Name())
 	ctx, cancel := context.WithCancel(context.TODO())
 	f := func() {
 		defer close(r.Results())

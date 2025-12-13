@@ -17,28 +17,22 @@ package command
 import (
 	"fmt"
 
-	"github.com/coreos/etcd/version"
-	"github.com/coreos/go-semver/semver"
 	"github.com/spf13/cobra"
+
+	"go.etcd.io/etcd/api/v3/version"
 )
 
 // NewVersionCommand prints out the version of etcd.
 func NewVersionCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "version",
-		Short: "Prints the version of etcdctl",
-		Run:   versionCommandFunc,
+		Use:     "version",
+		Short:   "Prints the version of etcdctl",
+		Run:     versionCommandFunc,
+		GroupID: groupUtilityID,
 	}
 }
 
 func versionCommandFunc(cmd *cobra.Command, args []string) {
 	fmt.Println("etcdctl version:", version.Version)
-	ver, err := semver.NewVersion(version.Version)
-	var vs string
-	if err == nil {
-		vs = fmt.Sprintf("%d.%d", ver.Major, ver.Minor)
-	} else {
-		vs = "unknown"
-	}
-	fmt.Println("API version:", vs)
+	fmt.Println("API version:", version.APIVersion)
 }

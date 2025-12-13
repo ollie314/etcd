@@ -15,18 +15,22 @@
 package cmd
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 
-	v3 "github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/pkg/report"
-
+	"github.com/cheggaaa/pb/v3"
+	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
-	"gopkg.in/cheggaaa/pb.v1"
+	"golang.org/x/time/rate"
+
+	v3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/report"
 )
 
 // putCmd represents the put command
@@ -42,45 +46,56 @@ var (
 	valSize int
 
 	putTotal int
+	putRate  int
 
 	keySpaceSize int
 	seqKeys      bool
 
 	compactInterval   time.Duration
 	compactIndexDelta int64
+
+	checkHashkv bool
 )
 
 func init() {
 	RootCmd.AddCommand(putCmd)
 	putCmd.Flags().IntVar(&keySize, "key-size", 8, "Key size of put request")
 	putCmd.Flags().IntVar(&valSize, "val-size", 8, "Value size of put request")
+	putCmd.Flags().IntVar(&putRate, "rate", 0, "Maximum puts per second (0 is no limit)")
+
 	putCmd.Flags().IntVar(&putTotal, "total", 10000, "Total number of put requests")
 	putCmd.Flags().IntVar(&keySpaceSize, "key-space-size", 1, "Maximum possible keys")
 	putCmd.Flags().BoolVar(&seqKeys, "sequential-keys", false, "Use sequential keys")
 	putCmd.Flags().DurationVar(&compactInterval, "compact-interval", 0, `Interval to compact database (do not duplicate this with etcd's 'auto-compaction-retention' flag) (e.g. --compact-interval=5m compacts every 5-minute)`)
 	putCmd.Flags().Int64Var(&compactIndexDelta, "compact-index-delta", 1000, "Delta between current revision and compact revision (e.g. current revision 10000, compact at 9000)")
+	putCmd.Flags().BoolVar(&checkHashkv, "check-hashkv", false, "'true' to check hashkv")
 }
 
-func putFunc(cmd *cobra.Command, args []string) {
+func putFunc(cmd *cobra.Command, _ []string) {
 	if keySpaceSize <= 0 {
 		fmt.Fprintf(os.Stderr, "expected positive --key-space-size, got (%v)", keySpaceSize)
 		os.Exit(1)
 	}
 
 	requests := make(chan v3.Op, totalClients)
+	if putRate == 0 {
+		putRate = math.MaxInt32
+	}
+	limit := rate.NewLimiter(rate.Limit(putRate), 1)
 	clients := mustCreateClients(totalClients, totalConns)
 	k, v := make([]byte, keySize), string(mustRandBytes(valSize))
 
 	bar = pb.New(putTotal)
-	bar.Format("Bom !")
 	bar.Start()
 
-	r := newReport()
+	r := newReport(cmd.Name())
 	for i := range clients {
 		wg.Add(1)
 		go func(c *v3.Client) {
 			defer wg.Done()
 			for op := range requests {
+				limit.Wait(context.Background())
+
 				st := time.Now()
 				_, err := c.Do(context.Background(), op)
 				r.Results() <- report.Result{Err: err, Start: st, End: time.Now()}
@@ -115,35 +130,54 @@ func putFunc(cmd *cobra.Command, args []string) {
 	close(r.Results())
 	bar.Finish()
 	fmt.Println(<-rc)
+
+	if checkHashkv {
+		hashKV(cmd, clients)
+	}
 }
 
 func compactKV(clients []*v3.Client) {
-	var curRev int64
-	for _, c := range clients {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		resp, err := c.KV.Get(ctx, "foo")
-		cancel()
-		if err != nil {
-			panic(err)
-		}
-		curRev = resp.Header.Revision
-		break
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	resp, err := clients[0].KV.Get(ctx, "foo")
+	cancel()
+	if err != nil {
+		panic(err)
 	}
-	revToCompact := max(0, curRev-compactIndexDelta)
-	for _, c := range clients {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := c.KV.Compact(ctx, revToCompact)
-		cancel()
-		if err != nil {
-			panic(err)
-		}
-		break
+	revToCompact := max(0, resp.Header.Revision-compactIndexDelta)
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	_, err = clients[0].KV.Compact(ctx, revToCompact)
+	cancel()
+	if err != nil {
+		panic(err)
 	}
 }
 
-func max(n1, n2 int64) int64 {
-	if n1 > n2 {
-		return n1
+func hashKV(cmd *cobra.Command, clients []*v3.Client) {
+	eps, err := cmd.Flags().GetStringSlice("endpoints")
+	if err != nil {
+		panic(err)
 	}
-	return n2
+	for i, ip := range eps {
+		eps[i] = strings.TrimSpace(ip)
+	}
+	host := eps[0]
+
+	st := time.Now()
+	rh, err := clients[0].HashKV(context.Background(), host, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get the hashkv of endpoint %s (%v)\n", host, err)
+		panic(err)
+	}
+	rt, err := clients[0].Status(context.Background(), host)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get the status of endpoint %s (%v)\n", host, err)
+		panic(err)
+	}
+
+	rs := "HashKV Summary:\n"
+	rs += fmt.Sprintf("\tHashKV: %d\n", rh.Hash)
+	rs += fmt.Sprintf("\tEndpoint: %s\n", host)
+	rs += fmt.Sprintf("\tTime taken to get hashkv: %v\n", time.Since(st))
+	rs += fmt.Sprintf("\tDB size: %s", humanize.Bytes(uint64(rt.DbSize)))
+	fmt.Println(rs)
 }

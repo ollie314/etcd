@@ -15,29 +15,33 @@
 package report
 
 import (
-	"bytes"
 	"encoding/csv"
 	"fmt"
 	"log"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
-type timeSeries struct {
-	timestamp  int64
-	avgLatency time.Duration
-	throughPut int64
+type DataPoint struct {
+	Timestamp  int64
+	MinLatency time.Duration
+	AvgLatency time.Duration
+	MaxLatency time.Duration
+	ThroughPut int64
 }
 
-type TimeSeries []timeSeries
+type TimeSeries []DataPoint
 
 func (t TimeSeries) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
 func (t TimeSeries) Len() int           { return len(t) }
-func (t TimeSeries) Less(i, j int) bool { return t[i].timestamp < t[j].timestamp }
+func (t TimeSeries) Less(i, j int) bool { return t[i].Timestamp < t[j].Timestamp }
 
 type secondPoint struct {
+	minLatency   time.Duration
+	maxLatency   time.Duration
 	totalLatency time.Duration
 	count        int64
 }
@@ -57,10 +61,14 @@ func (sp *secondPoints) Add(ts time.Time, lat time.Duration) {
 
 	tk := ts.Unix()
 	if v, ok := sp.tm[tk]; !ok {
-		sp.tm[tk] = secondPoint{totalLatency: lat, count: 1}
+		sp.tm[tk] = secondPoint{minLatency: lat, maxLatency: lat, totalLatency: lat, count: 1}
 	} else {
+		if lat != time.Duration(0) {
+			v.minLatency = min(v.minLatency, lat)
+		}
+		v.maxLatency = max(v.maxLatency, lat)
 		v.totalLatency += lat
-		v.count += 1
+		v.count++
 		sp.tm[tk] = v
 	}
 }
@@ -94,12 +102,14 @@ func (sp *secondPoints) getTimeSeries() TimeSeries {
 	for k, v := range sp.tm {
 		var lat time.Duration
 		if v.count > 0 {
-			lat = time.Duration(v.totalLatency) / time.Duration(v.count)
+			lat = v.totalLatency / time.Duration(v.count)
 		}
-		tslice[i] = timeSeries{
-			timestamp:  k,
-			avgLatency: lat,
-			throughPut: v.count,
+		tslice[i] = DataPoint{
+			Timestamp:  k,
+			MinLatency: v.minLatency,
+			AvgLatency: lat,
+			MaxLatency: v.maxLatency,
+			ThroughPut: v.count,
 		}
 		i++
 	}
@@ -108,18 +118,20 @@ func (sp *secondPoints) getTimeSeries() TimeSeries {
 	return tslice
 }
 
-func (ts TimeSeries) String() string {
-	buf := new(bytes.Buffer)
+func (t TimeSeries) String() string {
+	buf := new(strings.Builder)
 	wr := csv.NewWriter(buf)
-	if err := wr.Write([]string{"unix_ts", "avg_latency", "throughput"}); err != nil {
+	if err := wr.Write([]string{"UNIX-SECOND", "MIN-LATENCY-MS", "AVG-LATENCY-MS", "MAX-LATENCY-MS", "AVG-THROUGHPUT"}); err != nil {
 		log.Fatal(err)
 	}
-	rows := [][]string{}
-	for i := range ts {
+	var rows [][]string
+	for i := range t {
 		row := []string{
-			fmt.Sprintf("%d", ts[i].timestamp),
-			fmt.Sprintf("%s", ts[i].avgLatency),
-			fmt.Sprintf("%d", ts[i].throughPut),
+			fmt.Sprintf("%d", t[i].Timestamp),
+			t[i].MinLatency.String(),
+			t[i].AvgLatency.String(),
+			t[i].MaxLatency.String(),
+			fmt.Sprintf("%d", t[i].ThroughPut),
 		}
 		rows = append(rows, row)
 	}

@@ -16,11 +16,12 @@ package cmd
 
 import (
 	"sync"
+	"time"
 
-	"github.com/coreos/etcd/pkg/transport"
-
+	"github.com/cheggaaa/pb/v3"
 	"github.com/spf13/cobra"
-	"gopkg.in/cheggaaa/pb.v1"
+
+	"go.etcd.io/etcd/client/pkg/v3/transport"
 )
 
 // This represents the base command when called without any subcommands
@@ -28,7 +29,7 @@ var RootCmd = &cobra.Command{
 	Use:   "benchmark",
 	Short: "A low-level benchmark tool for etcd3",
 	Long: `benchmark is a low-level benchmark tool for etcd3.
-It uses gRPC client directly and does not depend on 
+It uses gRPC client directly and does not depend on
 etcd client library.
 	`,
 }
@@ -49,6 +50,12 @@ var (
 	memProfPath string
 
 	user string
+
+	dialTimeout time.Duration
+
+	autoSyncInterval time.Duration
+
+	generatePerfReport bool
 )
 
 func init() {
@@ -60,7 +67,13 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&sample, "sample", false, "'true' to sample requests for every second")
 	RootCmd.PersistentFlags().StringVar(&tls.CertFile, "cert", "", "identify HTTPS client using this SSL certificate file")
 	RootCmd.PersistentFlags().StringVar(&tls.KeyFile, "key", "", "identify HTTPS client using this SSL key file")
-	RootCmd.PersistentFlags().StringVar(&tls.CAFile, "cacert", "", "verify certificates of HTTPS-enabled servers using this CA bundle")
+	RootCmd.PersistentFlags().StringVar(&tls.TrustedCAFile, "cacert", "", "verify certificates of HTTPS-enabled servers using this CA bundle")
+	RootCmd.PersistentFlags().BoolVar(&tls.InsecureSkipVerify, "insecure-skip-tls-verify", false, "skip server certificate verification")
 
-	RootCmd.PersistentFlags().StringVar(&user, "user", "", "specify username and password in username:password format")
+	RootCmd.PersistentFlags().StringVar(&user, "user", "", "provide username[:password] and prompt if password is not supplied.")
+	RootCmd.PersistentFlags().DurationVar(&dialTimeout, "dial-timeout", 0, "dial timeout for client connections")
+
+	RootCmd.PersistentFlags().DurationVar(&autoSyncInterval, "auto-sync-interval", time.Duration(0), "AutoSyncInterval is the interval to update endpoints with its latest members")
+
+	RootCmd.PersistentFlags().BoolVar(&generatePerfReport, "report-perfdash", false, "Generate benchmark report in perfdash format")
 }

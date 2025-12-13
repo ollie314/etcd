@@ -18,7 +18,7 @@ package idutil
 
 import (
 	"math"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,8 +32,8 @@ const (
 // a node member ID.
 //
 // The initial id is in this format:
-// High order byte is memberID, next 5 bytes are from timestamp,
-// and low order 2 bytes are 0s.
+// High order 2 bytes are from memberID, next 5 bytes are from timestamp,
+// and low order one byte is a counter.
 // | prefix   | suffix              |
 // | 2 bytes  | 5 bytes   | 1 byte  |
 // | memberID | timestamp | cnt     |
@@ -43,11 +43,10 @@ const (
 //
 // It increases suffix to generate the next id.
 // The count field may overflow to timestamp field, which is intentional.
-// It helps to extend the event window to 2^56. This doesn't break that
+// It helps to extend the event window to 2^48. This doesn't break that
 // id generated after restart is unique because etcd throughput is <<
 // 256req/ms(250k reqs/second).
 type Generator struct {
-	mu sync.Mutex
 	// high order 2 bytes
 	prefix uint64
 	// low order 6 bytes
@@ -66,10 +65,8 @@ func NewGenerator(memberID uint16, now time.Time) *Generator {
 
 // Next generates a id that is unique.
 func (g *Generator) Next() uint64 {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.suffix++
-	id := g.prefix | lowbit(g.suffix, suffixLen)
+	suffix := atomic.AddUint64(&g.suffix, 1)
+	id := g.prefix | lowbit(suffix, suffixLen)
 	return id
 }
 

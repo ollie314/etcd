@@ -21,10 +21,11 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"github.com/coreos/etcd/lease"
-	"github.com/coreos/etcd/pkg/report"
-
 	"github.com/spf13/cobra"
+
+	"go.etcd.io/etcd/pkg/v3/report"
+	"go.etcd.io/etcd/pkg/v3/traceutil"
+	"go.etcd.io/etcd/server/v3/lease"
 )
 
 // mvccPutCmd represents a storage put performance benchmarking tool
@@ -36,24 +37,25 @@ var mvccPutCmd = &cobra.Command{
 }
 
 var (
-	totalNrKeys    int
-	storageKeySize int
-	valueSize      int
-	txn            bool
+	mvccTotalRequests int
+	storageKeySize    int
+	valueSize         int
+	txn               bool
+	nrTxnOps          int
 )
 
 func init() {
 	mvccCmd.AddCommand(mvccPutCmd)
 
-	mvccPutCmd.Flags().IntVar(&totalNrKeys, "total", 100, "a total number of keys to put")
+	mvccPutCmd.Flags().IntVar(&mvccTotalRequests, "total", 100, "a total number of keys to put")
 	mvccPutCmd.Flags().IntVar(&storageKeySize, "key-size", 64, "a size of key (Byte)")
 	mvccPutCmd.Flags().IntVar(&valueSize, "value-size", 64, "a size of value (Byte)")
 	mvccPutCmd.Flags().BoolVar(&txn, "txn", false, "put a key in transaction or not")
+	mvccPutCmd.Flags().IntVar(&nrTxnOps, "txn-ops", 1, "a number of keys to put per transaction")
 
 	// TODO: after the PR https://github.com/spf13/cobra/pull/220 is merged, the below pprof related flags should be moved to RootCmd
 	mvccPutCmd.Flags().StringVar(&cpuProfPath, "cpuprofile", "", "the path of file for storing cpu profile result")
 	mvccPutCmd.Flags().StringVar(&memProfPath, "memprofile", "", "the path of file for storing heap profile result")
-
 }
 
 func createBytesSlice(bytesN, sliceN int) [][]byte {
@@ -67,14 +69,14 @@ func createBytesSlice(bytesN, sliceN int) [][]byte {
 	return rs
 }
 
-func mvccPutFunc(cmd *cobra.Command, args []string) {
+func mvccPutFunc(cmd *cobra.Command, _ []string) {
 	if cpuProfPath != "" {
 		f, err := os.Create(cpuProfPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to create a file for storing cpu profile result: ", err)
 			os.Exit(1)
 		}
-
+		defer f.Close()
 		err = pprof.StartCPUProfile(f)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to start cpu profile: ", err)
@@ -89,7 +91,7 @@ func mvccPutFunc(cmd *cobra.Command, args []string) {
 			fmt.Fprintln(os.Stderr, "Failed to create a file for storing heap profile result: ", err)
 			os.Exit(1)
 		}
-
+		defer f.Close()
 		defer func() {
 			err := pprof.WriteHeapProfile(f)
 			if err != nil {
@@ -99,26 +101,33 @@ func mvccPutFunc(cmd *cobra.Command, args []string) {
 		}()
 	}
 
-	keys := createBytesSlice(storageKeySize, totalNrKeys)
-	vals := createBytesSlice(valueSize, totalNrKeys)
+	keys := createBytesSlice(storageKeySize, mvccTotalRequests*nrTxnOps)
+	vals := createBytesSlice(valueSize, mvccTotalRequests*nrTxnOps)
 
-	r := newReport()
+	weight := float64(nrTxnOps)
+	r := newWeightedReport(cmd.Name())
 	rrc := r.Results()
 
 	rc := r.Run()
-	for i := 0; i < totalNrKeys; i++ {
-		st := time.Now()
-		if txn {
-			id := s.TxnBegin()
-			if _, err := s.TxnPut(id, keys[i], vals[i], lease.NoLease); err != nil {
-				fmt.Fprintln(os.Stderr, "txn put error:", err)
-				os.Exit(1)
+
+	if txn {
+		for i := 0; i < mvccTotalRequests; i++ {
+			st := time.Now()
+
+			tw := s.Write(traceutil.TODO())
+			for j := i; j < i+nrTxnOps; j++ {
+				tw.Put(keys[j], vals[j], lease.NoLease)
 			}
-			s.TxnEnd(id)
-		} else {
-			s.Put(keys[i], vals[i], lease.NoLease)
+			tw.End()
+
+			rrc <- report.Result{Start: st, End: time.Now(), Weight: weight}
 		}
-		rrc <- report.Result{Start: st, End: time.Now()}
+	} else {
+		for i := 0; i < mvccTotalRequests; i++ {
+			st := time.Now()
+			s.Put(keys[i], vals[i], lease.NoLease)
+			rrc <- report.Result{Start: st, End: time.Now()}
+		}
 	}
 
 	close(r.Results())

@@ -15,26 +15,28 @@
 package command
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/signal"
+	"syscall"
 
-	"github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/clientv3/concurrency"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
+	"go.etcd.io/etcd/pkg/v3/cobrautl"
 )
 
-var (
-	electListen bool
-)
+var electListen bool
 
 // NewElectCommand returns the cobra command for "elect".
 func NewElectCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "elect <election-name> [proposal]",
-		Short: "Observes and participates in leader election",
-		Run:   electCommandFunc,
+		Use:     "elect <election-name> [proposal]",
+		Short:   "Observes and participates in leader election",
+		Run:     electCommandFunc,
+		GroupID: groupConcurrencyID,
 	}
 	cmd.Flags().BoolVarP(&electListen, "listen", "l", false, "observation mode")
 	return cmd
@@ -42,24 +44,24 @@ func NewElectCommand() *cobra.Command {
 
 func electCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 && len(args) != 2 {
-		ExitWithError(ExitBadArgs, errors.New("elect takes one election name argument and an optional proposal argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, errors.New("elect takes one election name argument and an optional proposal argument"))
 	}
 	c := mustClientFromCmd(cmd)
 
 	var err error
 	if len(args) == 1 {
 		if !electListen {
-			ExitWithError(ExitBadArgs, errors.New("no proposal argument but -l not set"))
+			cobrautl.ExitWithError(cobrautl.ExitBadArgs, errors.New("no proposal argument but -l not set"))
 		}
 		err = observe(c, args[0])
 	} else {
 		if electListen {
-			ExitWithError(ExitBadArgs, errors.New("proposal given but -l is set"))
+			cobrautl.ExitWithError(cobrautl.ExitBadArgs, errors.New("proposal given but -l is set"))
 		}
 		err = campaign(c, args[0], args[1])
 	}
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 }
 
@@ -73,7 +75,7 @@ func observe(c *clientv3.Client, election string) error {
 
 	donec := make(chan struct{})
 	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, os.Interrupt, os.Kill)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigc
 		cancel()
@@ -107,7 +109,7 @@ func campaign(c *clientv3.Client, election string, prop string) error {
 
 	donec := make(chan struct{})
 	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, os.Interrupt, os.Kill)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigc
 		cancel()

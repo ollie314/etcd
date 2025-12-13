@@ -1,10 +1,20 @@
 # raftexample
 
-raftexample is an example usage of etcd's [raft library](../../raft). It provides a simple REST API for a key-value store cluster backed by the [Raft][raft] consensus algorithm.
+raftexample is an example usage of etcd's [raft library](https://github.com/etcd-io/raft). It provides a simple REST API for a key-value store cluster backed by the [Raft][raft] consensus algorithm.
 
 [raft]: http://raftconsensus.github.io/
 
 ## Getting Started
+
+### Building raftexample
+
+Clone `etcd` to `<directory>/src/go.etcd.io/etcd`
+
+```sh
+export GOPATH=<directory>
+cd <directory>/src/go.etcd.io/etcd/contrib/raftexample
+go build -o raftexample
+```
 
 ### Running single node raftexample
 
@@ -33,7 +43,7 @@ curl -L http://127.0.0.1:12380/my-key
 
 First install [goreman](https://github.com/mattn/goreman), which manages Procfile-based applications.
 
-The [Procfile script](./Procfile) will set up a local example cluster. You can start it with:
+The [Procfile script](./Procfile) will set up a local example cluster. Start it with:
 
 ```sh
 goreman start
@@ -41,7 +51,7 @@ goreman start
 
 This will bring up three raftexample instances.
 
-You can write a key-value pair to any member of the cluster and likewise retrieve it from any member.
+Now it's possible to write a key-value pair to any member of the cluster and likewise retrieve it from any member.
 
 ### Fault Tolerance
 

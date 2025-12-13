@@ -20,21 +20,44 @@ import (
 	"os"
 	"strings"
 
-	"github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/pkg/report"
+	"github.com/bgentry/speakeasy"
+	"google.golang.org/grpc/grpclog"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/report"
 )
 
 var (
-	// dialTotal counts the number of mustCreateConn calls so that endpoint
-	// connections can be handed out in round-robin order
-	dialTotal int
+	// cache the username and password for multiple connections
+	globalUserName string
+	globalPassword string
 )
 
+func getUsernamePassword(usernameFlag string) (string, string, error) {
+	if globalUserName != "" && globalPassword != "" {
+		return globalUserName, globalPassword, nil
+	}
+	var ok bool
+	globalUserName, globalPassword, ok = strings.Cut(usernameFlag, ":")
+	if !ok {
+		// Prompt for the password.
+		password, err := speakeasy.Ask("Password: ")
+		if err != nil {
+			return "", "", err
+		}
+		globalUserName = usernameFlag
+		globalPassword = password
+	}
+	return globalUserName, globalPassword, nil
+}
+
 func mustCreateConn() *clientv3.Client {
-	endpoint := endpoints[dialTotal%len(endpoints)]
-	dialTotal++
-	cfg := clientv3.Config{Endpoints: []string{endpoint}}
-	if !tls.Empty() {
+	cfg := clientv3.Config{
+		AutoSyncInterval: autoSyncInterval,
+		Endpoints:        endpoints,
+		DialTimeout:      dialTimeout,
+	}
+	if !tls.Empty() || tls.TrustedCAFile != "" {
 		cfgtls, err := tls.ClientConfig()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bad tls config: %v\n", err)
@@ -44,21 +67,23 @@ func mustCreateConn() *clientv3.Client {
 	}
 
 	if len(user) != 0 {
-		splitted := strings.SplitN(user, ":", 2)
-		if len(splitted) != 2 {
-			fmt.Fprintf(os.Stderr, "bad user information: %s\n", user)
+		username, password, err := getUsernamePassword(user)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bad user information: %s %v\n", user, err)
 			os.Exit(1)
 		}
-
-		cfg.Username = splitted[0]
-		cfg.Password = splitted[1]
+		cfg.Username = username
+		cfg.Password = password
 	}
 
 	client, err := clientv3.New(cfg)
+	grpclog.SetLoggerV2(grpclog.NewLoggerV2(os.Stderr, os.Stderr, os.Stderr))
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dial error: %v\n", err)
 		os.Exit(1)
 	}
+
 	return client
 }
 
@@ -85,13 +110,24 @@ func mustRandBytes(n int) []byte {
 	return rb
 }
 
-func newReport() report.Report {
+func newReport(benchmarkOp string) report.Report {
 	p := "%4.4f"
 	if precise {
 		p = "%g"
 	}
 	if sample {
-		return report.NewReportSample(p)
+		return report.NewReportSample(p, benchmarkOp, generatePerfReport)
 	}
-	return report.NewReport(p)
+	return report.NewReport(p, benchmarkOp, generatePerfReport)
+}
+
+func newWeightedReport(benchmarkOp string) report.Report {
+	p := "%4.4f"
+	if precise {
+		p = "%g"
+	}
+	if sample {
+		return report.NewReportSample(p, benchmarkOp, generatePerfReport)
+	}
+	return report.NewWeightedReport(report.NewReport(p, benchmarkOp, generatePerfReport), p, benchmarkOp, generatePerfReport)
 }

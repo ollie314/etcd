@@ -15,7 +15,12 @@
 package flags
 
 import (
+	"net/url"
+	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateURLsValueBad(t *testing.T) {
@@ -27,9 +32,6 @@ func TestValidateURLsValueBad(t *testing.T) {
 		// bad port specification
 		"127.0.0.1:foo",
 		"127.0.0.1:",
-		// unix sockets not supported
-		"unix://",
-		"unix://tmp/etcd.sock",
 		// bad strings
 		"somewhere",
 		"234#$",
@@ -39,23 +41,32 @@ func TestValidateURLsValueBad(t *testing.T) {
 	}
 	for i, in := range tests {
 		u := URLsValue{}
-		if err := u.Set(in); err == nil {
-			t.Errorf(`#%d: unexpected nil error for in=%q`, i, in)
-		}
+		assert.Errorf(t, u.Set(in), `#%d: unexpected nil error for in=%q`, i, in)
 	}
 }
 
-func TestValidateURLsValueGood(t *testing.T) {
-	tests := []string{
-		"https://1.2.3.4:8080",
-		"http://10.1.1.1:80",
-		"http://localhost:80",
-		"http://:80",
+func TestNewURLsValue(t *testing.T) {
+	tests := []struct {
+		s   string
+		exp []url.URL
+	}{
+		{s: "https://1.2.3.4:8080", exp: []url.URL{{Scheme: "https", Host: "1.2.3.4:8080"}}},
+		{s: "http://10.1.1.1:80", exp: []url.URL{{Scheme: "http", Host: "10.1.1.1:80"}}},
+		{s: "http://localhost:80", exp: []url.URL{{Scheme: "http", Host: "localhost:80"}}},
+		{s: "http://:80", exp: []url.URL{{Scheme: "http", Host: ":80"}}},
+		{s: "unix://tmp/etcd.sock", exp: []url.URL{{Scheme: "unix", Host: "tmp", Path: "/etcd.sock"}}},
+		{s: "unix:///tmp/127.27.84.4:23432", exp: []url.URL{{Scheme: "unix", Path: "/tmp/127.27.84.4:23432"}}},
+		{s: "unix://127.0.0.5:1456", exp: []url.URL{{Scheme: "unix", Host: "127.0.0.5:1456"}}},
+		{
+			s: "http://localhost:1,https://localhost:2",
+			exp: []url.URL{
+				{Scheme: "http", Host: "localhost:1"},
+				{Scheme: "https", Host: "localhost:2"},
+			},
+		},
 	}
-	for i, in := range tests {
-		u := URLsValue{}
-		if err := u.Set(in); err != nil {
-			t.Errorf("#%d: err=%v, want nil for in=%q", i, err, in)
-		}
+	for i := range tests {
+		uu := []url.URL(*NewURLsValue(tests[i].s))
+		require.Truef(t, reflect.DeepEqual(tests[i].exp, uu), "#%d: expected %+v, got %+v", i, tests[i].exp, uu)
 	}
 }

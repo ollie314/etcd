@@ -18,10 +18,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/coreos/etcd/lease"
-	"github.com/coreos/etcd/mvcc"
-	"github.com/coreos/etcd/mvcc/backend"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/server/v3/lease"
+	"go.etcd.io/etcd/server/v3/storage/backend"
+	"go.etcd.io/etcd/server/v3/storage/mvcc"
 )
 
 var (
@@ -32,8 +34,10 @@ var (
 )
 
 func initMVCC() {
-	be := backend.New("mvcc-bench", time.Duration(batchInterval), batchLimit)
-	s = mvcc.NewStore(be, &lease.FakeLessor{}, nil)
+	bcfg := backend.DefaultBackendConfig(zap.NewNop())
+	bcfg.Path, bcfg.BatchInterval, bcfg.BatchLimit = "mvcc-bench", time.Duration(batchInterval)*time.Millisecond, batchLimit
+	be := backend.New(bcfg)
+	s = mvcc.NewStore(zap.NewExample(), be, &lease.FakeLessor{}, mvcc.StoreConfig{})
 	os.Remove("mvcc-bench") // boltDB has an opened fd, so removing the file is ok
 }
 
@@ -54,6 +58,6 @@ func init() {
 	mvccCmd.PersistentFlags().IntVar(&batchLimit, "batch-limit", 10000, "A limit of batched transaction")
 }
 
-func mvccPreRun(cmd *cobra.Command, args []string) {
+func mvccPreRun(_ *cobra.Command, _ []string) {
 	initMVCC()
 }

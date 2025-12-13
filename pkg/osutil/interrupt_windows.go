@@ -12,11 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build windows
+//go:build windows
 
 package osutil
 
-import "os"
+import (
+	"os"
+
+	"go.uber.org/zap"
+)
 
 type InterruptHandler func()
 
@@ -24,7 +28,7 @@ type InterruptHandler func()
 func RegisterInterruptHandler(h InterruptHandler) {}
 
 // HandleInterrupts is a no-op on windows
-func HandleInterrupts() {}
+func HandleInterrupts(*zap.Logger) {}
 
 // Exit calls os.Exit
 func Exit(code int) {

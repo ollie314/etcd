@@ -1,5 +1,2 @@
-# Contributing guidelines
 
-Please read our [contribution workflow][contributing] before submitting a pull request.
-
-[contributing]: ../CONTRIBUTING.md#contribution-flow
+Please read https://github.com/etcd-io/etcd/blob/main/CONTRIBUTING.md#contribution-flow.

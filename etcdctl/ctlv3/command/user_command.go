@@ -15,23 +15,26 @@
 package command
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/bgentry/speakeasy"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/cobrautl"
 )
 
-var (
-	userShowDetail bool
-)
+var userShowDetail bool
 
 // NewUserCommand returns the cobra command for "user".
 func NewUserCommand() *cobra.Command {
 	ac := &cobra.Command{
-		Use:   "user <subcommand>",
-		Short: "User related commands",
+		Use:     "user <subcommand>",
+		Short:   "User related commands. Use `etcdctl user --help` to see subcommands",
+		Long:    "User related commands",
+		GroupID: groupAuthenticationID,
 	}
 
 	ac.AddCommand(newUserAddCommand())
@@ -47,16 +50,20 @@ func NewUserCommand() *cobra.Command {
 
 var (
 	passwordInteractive bool
+	passwordFromFlag    string
+	noPassword          bool
 )
 
 func newUserAddCommand() *cobra.Command {
 	cmd := cobra.Command{
-		Use:   "add <user name> [options]",
+		Use:   "add <user name or user:password> [options]",
 		Short: "Adds a new user",
 		Run:   userAddCommandFunc,
 	}
 
 	cmd.Flags().BoolVar(&passwordInteractive, "interactive", true, "Read password from stdin instead of interactive terminal")
+	cmd.Flags().StringVar(&passwordFromFlag, "new-user-password", "", "Supply password from the command line flag")
+	cmd.Flags().BoolVar(&noPassword, "no-password", false, "Create a user without password (CN based auth only)")
 
 	return &cmd
 }
@@ -120,92 +127,109 @@ func newUserRevokeRoleCommand() *cobra.Command {
 // userAddCommandFunc executes the "user add" command.
 func userAddCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("user add command requires user name as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("user add command requires user name as its argument"))
 	}
 
 	var password string
+	var user string
 
-	if !passwordInteractive {
-		fmt.Scanf("%s", &password)
+	options := &clientv3.UserAddOptions{
+		NoPassword: false,
+	}
+
+	if !noPassword {
+		if passwordFromFlag != "" {
+			user = args[0]
+			password = passwordFromFlag
+		} else {
+			splitted := strings.SplitN(args[0], ":", 2)
+			if len(splitted) < 2 {
+				user = args[0]
+				if !passwordInteractive {
+					fmt.Scanf("%s", &password)
+				} else {
+					password = readPasswordInteractive(args[0])
+				}
+			} else {
+				user = splitted[0]
+				password = splitted[1]
+				if len(user) == 0 {
+					cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("empty user name is not allowed"))
+				}
+			}
+		}
 	} else {
-		password = readPasswordInteractive(args[0])
+		user = args[0]
+		options.NoPassword = true
 	}
 
-	_, err := mustClientFromCmd(cmd).Auth.UserAdd(context.TODO(), args[0], password)
+	resp, err := mustClientFromCmd(cmd).Auth.UserAddWithOptions(context.TODO(), user, password, options)
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	fmt.Printf("User %s created\n", args[0])
+	display.UserAdd(user, *resp)
 }
 
 // userDeleteCommandFunc executes the "user delete" command.
 func userDeleteCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("user delete command requires user name as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("user delete command requires user name as its argument"))
 	}
 
-	_, err := mustClientFromCmd(cmd).Auth.UserDelete(context.TODO(), args[0])
+	resp, err := mustClientFromCmd(cmd).Auth.UserDelete(context.TODO(), args[0])
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
-
-	fmt.Printf("User %s deleted\n", args[0])
+	display.UserDelete(args[0], *resp)
 }
 
 // userGetCommandFunc executes the "user get" command.
 func userGetCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("user get command requires user name as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("user get command requires user name as its argument"))
 	}
 
 	name := args[0]
 	client := mustClientFromCmd(cmd)
 	resp, err := client.Auth.UserGet(context.TODO(), name)
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	fmt.Printf("User: %s\n", name)
-	if !userShowDetail {
-		fmt.Printf("Roles:")
+	if userShowDetail {
+		fmt.Printf("User: %s\n", name)
 		for _, role := range resp.Roles {
-			fmt.Printf(" %s", role)
-		}
-		fmt.Printf("\n")
-	} else {
-		for _, role := range resp.Roles {
-			fmt.Printf("\n")
+			fmt.Print("\n")
 			roleResp, err := client.Auth.RoleGet(context.TODO(), role)
 			if err != nil {
-				ExitWithError(ExitError, err)
+				cobrautl.ExitWithError(cobrautl.ExitError, err)
 			}
-
-			printRolePermissions(role, roleResp)
+			display.RoleGet(role, *roleResp)
 		}
+	} else {
+		display.UserGet(name, *resp)
 	}
 }
 
 // userListCommandFunc executes the "user list" command.
 func userListCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 0 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("user list command requires no arguments."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("user list command requires no arguments"))
 	}
 
 	resp, err := mustClientFromCmd(cmd).Auth.UserList(context.TODO())
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	for _, user := range resp.Users {
-		fmt.Printf("%s\n", user)
-	}
+	display.UserList(*resp)
 }
 
 // userChangePasswordCommandFunc executes the "user passwd" command.
 func userChangePasswordCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 1 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("user passwd command requires user name as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("user passwd command requires user name as its argument"))
 	}
 
 	var password string
@@ -216,61 +240,61 @@ func userChangePasswordCommandFunc(cmd *cobra.Command, args []string) {
 		password = readPasswordInteractive(args[0])
 	}
 
-	_, err := mustClientFromCmd(cmd).Auth.UserChangePassword(context.TODO(), args[0], password)
+	resp, err := mustClientFromCmd(cmd).Auth.UserChangePassword(context.TODO(), args[0], password)
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	fmt.Println("Password updated")
+	display.UserChangePassword(*resp)
 }
 
 // userGrantRoleCommandFunc executes the "user grant-role" command.
 func userGrantRoleCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 2 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("user grant command requires user name and role name as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("user grant command requires user name and role name as its argument"))
 	}
 
-	_, err := mustClientFromCmd(cmd).Auth.UserGrantRole(context.TODO(), args[0], args[1])
+	resp, err := mustClientFromCmd(cmd).Auth.UserGrantRole(context.TODO(), args[0], args[1])
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	fmt.Printf("Role %s is granted to user %s\n", args[1], args[0])
+	display.UserGrantRole(args[0], args[1], *resp)
 }
 
 // userRevokeRoleCommandFunc executes the "user revoke-role" command.
 func userRevokeRoleCommandFunc(cmd *cobra.Command, args []string) {
 	if len(args) != 2 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("user revoke-role requires user name and role name as its argument."))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("user revoke-role requires user name and role name as its argument"))
 	}
 
-	_, err := mustClientFromCmd(cmd).Auth.UserRevokeRole(context.TODO(), args[0], args[1])
+	resp, err := mustClientFromCmd(cmd).Auth.UserRevokeRole(context.TODO(), args[0], args[1])
 	if err != nil {
-		ExitWithError(ExitError, err)
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	fmt.Printf("Role %s is revoked from user %s\n", args[1], args[0])
+	display.UserRevokeRole(args[0], args[1], *resp)
 }
 
 func readPasswordInteractive(name string) string {
 	prompt1 := fmt.Sprintf("Password of %s: ", name)
 	password1, err1 := speakeasy.Ask(prompt1)
 	if err1 != nil {
-		ExitWithError(ExitBadArgs, fmt.Errorf("failed to ask password: %s.", err1))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("failed to ask password: %w", err1))
 	}
 
 	if len(password1) == 0 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("empty password"))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("empty password"))
 	}
 
 	prompt2 := fmt.Sprintf("Type password of %s again for confirmation: ", name)
 	password2, err2 := speakeasy.Ask(prompt2)
 	if err2 != nil {
-		ExitWithError(ExitBadArgs, fmt.Errorf("failed to ask password: %s.", err2))
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("failed to ask password: %w", err2))
 	}
 
-	if strings.Compare(password1, password2) != 0 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("given passwords are different."))
+	if password1 != password2 {
+		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("given passwords are different"))
 	}
 
 	return password1
